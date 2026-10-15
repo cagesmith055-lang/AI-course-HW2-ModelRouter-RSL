@@ -12,6 +12,7 @@ from app.core.router import RouterEngine
 from app.core.embedder import SemanticEmbedder
 from app.core.cascade import CascadeEngine
 from app.core.recommender import ModelRecommender
+from app.core.rsl import RSLEngine
 from app.core.model_discovery import sync_all_providers_from_remote
 from app.core.rate_limit import FixedWindowRateLimiter
 from app.core.exceptions import (
@@ -23,7 +24,7 @@ from app.core.exceptions import (
     ModelAccessError,
     RateLimitError,
 )
-from app.api import chat, models
+from app.api import chat, models, rsl
 from app.api.admin import router as admin_router
 
 VALID_RUNTIME_MODES = {"internal", "standalone"}
@@ -112,12 +113,22 @@ async def lifespan(app: FastAPI):
 
     cascade = CascadeEngine(db, router)
     await cascade.reload()
+
     recommender = ModelRecommender()
+
+    # RSL Engine
+    rsl_engine = RSLEngine(
+        db,
+        router,
+    )
+    await rsl_engine.initialize()
 
     app.state.db = db
     app.state.router = router
     app.state.cascade = cascade
     app.state.recommender = recommender
+    app.state.rsl = rsl_engine
+
     app.state.runtime_mode = runtime_mode
     app.state.enable_admin_api = enable_admin_api
     app.state.enable_standalone_keys = enable_standalone_keys
@@ -126,41 +137,104 @@ async def lifespan(app: FastAPI):
     app.state.internal_auth_key = internal_auth_key
     app.state.admin_key = admin_key
     app.state.api_key_limiter = FixedWindowRateLimiter()
-    app.state.keyword_routing_enabled = (await db.get_setting("keyword_routing_enabled", "false")) == "true"
-    app.state.cascade_enabled = (await db.get_setting("cascade_enabled", "false")) == "true"
 
-    semantic_cfg = getattr(config, "semantic_routing", None) or {}
-    sem_enabled_db = (await db.get_setting("semantic_routing_enabled", "false")) == "true"
-    sem_enabled = sem_enabled_db or semantic_cfg.get("enabled", False)
-    embedder = SemanticEmbedder(
-        model_name=semantic_cfg.get("model", "all-MiniLM-L6-v2"),
-        threshold=semantic_cfg.get("threshold", 0.4),
-        cache_dir=semantic_cfg.get("cache_dir", ".embed_cache"),
-        categories=semantic_cfg.get("categories"),
+    app.state.keyword_routing_enabled = (
+        await db.get_setting(
+            "keyword_routing_enabled",
+            "false",
+        )
+    ) == "true"
+
+    app.state.cascade_enabled = (
+        await db.get_setting(
+            "cascade_enabled",
+            "false",
+        )
+    ) == "true"
+
+    semantic_cfg = (
+        getattr(
+            config,
+            "semantic_routing",
+            None,
+        )
+        or {}
     )
+
+    sem_enabled_db = (
+        await db.get_setting(
+            "semantic_routing_enabled",
+            "false",
+        )
+    ) == "true"
+
+    sem_enabled = (
+        sem_enabled_db
+        or semantic_cfg.get(
+            "enabled",
+            False,
+        )
+    )
+
+    embedder = SemanticEmbedder(
+        model_name=semantic_cfg.get(
+            "model",
+            "all-MiniLM-L6-v2",
+        ),
+        threshold=semantic_cfg.get(
+            "threshold",
+            0.4,
+        ),
+        cache_dir=semantic_cfg.get(
+            "cache_dir",
+            ".embed_cache",
+        ),
+        categories=semantic_cfg.get(
+            "categories"
+        ),
+    )
+
     if sem_enabled:
         embedder.load()
+
     app.state.embedder = embedder
-    app.state.semantic_routing_enabled = embedder.enabled and sem_enabled
+
+    app.state.semantic_routing_enabled = (
+        embedder.enabled
+        and sem_enabled
+    )
 
     if not router.model_map:
-        print("WARNING: No models loaded. Use Admin API or add config to config/providers.yaml")
-        print("  Admin API: POST /admin/providers, POST /admin/models, etc.")
+        print(
+            "WARNING: No models loaded. "
+            "Use Admin API or add config "
+            "to config/providers.yaml"
+        )
+        print(
+            "  Admin API: POST /admin/providers, "
+            "POST /admin/models, etc."
+        )
         print()
-
     yield
 
     await db.close()
 
 
-app = FastAPI(title="Model Router", version="0.2.0", lifespan=lifespan)
+app = FastAPI(
+    title="Model Router",
+    version="0.2.0",
+    lifespan=lifespan,
+)
 
 app.include_router(chat.router)
 app.include_router(models.router)
-if _env_flag("ROUTER_ENABLE_ADMIN_API", _runtime_mode() != "internal"):
+app.include_router(rsl.router)
+
+if _env_flag(
+    "ROUTER_ENABLE_ADMIN_API",
+    _runtime_mode() != "internal",
+):
     app.include_router(admin_router)
-
-
 @app.exception_handler(ModelNotFoundError)
 async def handle_model_not_found(_, exc):
     return JSONResponse(status_code=404, content={"error": str(exc), "available": exc.available})

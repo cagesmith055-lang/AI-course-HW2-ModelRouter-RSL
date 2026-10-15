@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# Python virtual environment
+.venv/
+venv/
+
 # Local SQLite databases and their journal files.
 *.db
 *.db-*

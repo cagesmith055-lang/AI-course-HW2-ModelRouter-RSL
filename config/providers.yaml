@@ -1,0 +1,39 @@
+providers:
+  openai:
+    base_url: ${OPENAI_BASE_URL}
+    health_url: ""
+    timeout: 0
+    max_retries: 1
+    key_strategy: round_robin
+
+    keys:
+      - key: ${OPENAI_KEY_1}
+        rpm: 600
+        weight: 1
+
+    models:
+      - name: qwen3:1.7b
+        routing_keys:
+          - qwen-small
+        pricing:
+          prompt: 0
+          completion: 0
+
+      - name: qwen3:4b-instruct
+        routing_keys:
+          - qwen-strong
+        pricing:
+          prompt: 0
+          completion: 0
+
+server:
+  host: 127.0.0.1
+  port: 8000
+
+auth:
+  api_key: ${ROUTER_API_KEY}
+
+semantic_routing:
+  enabled: false
+
+keyword_rules: []
